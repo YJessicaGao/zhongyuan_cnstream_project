@@ -22,5 +22,5 @@ mkdir -p output
 mkdir -p output_mat
 
 $CURRENT_DIR/bin/zhongyuan_server  \
-  --perf_level 3 \
+  --perf_level 0 \
   --alsologtostderr
