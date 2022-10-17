@@ -1,0 +1,127 @@
+diff --git a/modules/source/include/data_source.hpp b/modules/source/include/data_source.hpp
+index 0a9abc9..4fbea00 100644
+--- a/modules/source/include/data_source.hpp
++++ b/modules/source/include/data_source.hpp
+@@ -225,7 +225,8 @@ class RtspHandler : public SourceHandler {
+   static std::shared_ptr<SourceHandler> Create(DataSource *module, const std::string &stream_id,
+                                                const std::string &url_name, bool use_ffmpeg = false, int reconnect = 10,
+                                                const MaximumVideoResolution &maximum_resolution = {},
+-                                               std::function<void(ESPacket, std::string)> callback = nullptr);
++                                               std::function<void(ESPacket, std::string)> callback = nullptr,
++                                               int interval = 0);
+   /*!
+    * @brief The destructor of RtspHandler.
+    *
+@@ -249,7 +250,7 @@ class RtspHandler : public SourceHandler {
+  private:
+   explicit RtspHandler(DataSource *module, const std::string &stream_id, const std::string &url_name, bool use_ffmpeg,
+                        int reconnect, const MaximumVideoResolution &maximum_resolution,
+-                       std::function<void(ESPacket, std::string)> callback);
++                       std::function<void(ESPacket, std::string)> callback, int interval);
+ 
+ #ifdef UNIT_TEST
+  public:  // NOLINT
+diff --git a/modules/source/src/data_handler_rtsp.cpp b/modules/source/src/data_handler_rtsp.cpp
+index 821d16c..d6cd10e 100644
+--- a/modules/source/src/data_handler_rtsp.cpp
++++ b/modules/source/src/data_handler_rtsp.cpp
+@@ -44,13 +44,14 @@ namespace cnstream {
+ std::shared_ptr<SourceHandler> RtspHandler::Create(DataSource *module, const std::string &stream_id,
+                                                    const std::string &url_name, bool use_ffmpeg, int reconnect,
+                                                    const MaximumVideoResolution &maximum_resolution,
+-                                                   std::function<void(ESPacket, std::string)> callback) {
++                                                   std::function<void(ESPacket, std::string)> callback,
++                                                   int interval) {
+   if (!module || stream_id.empty() || url_name.empty()) {
+     LOGE(SOURCE) << "[RtspHandler] Create function, invalid paramters.";
+     return nullptr;
+   }
+   std::shared_ptr<RtspHandler> handler(
+-      new (std::nothrow) RtspHandler(module, stream_id, url_name, use_ffmpeg, reconnect, maximum_resolution, callback));
++      new (std::nothrow) RtspHandler(module, stream_id, url_name, use_ffmpeg, reconnect, maximum_resolution, callback, interval));
+   return handler;
+ }
+ 
+@@ -262,10 +263,12 @@ class Live555Demuxer : public rtsp_detail::IDemuxer, public IRtspCB {
+ 
+ RtspHandler::RtspHandler(DataSource *module, const std::string &stream_id, const std::string &url_name, bool use_ffmpeg,
+                          int reconnect, const MaximumVideoResolution &maximum_resolution,
+-                         std::function<void(ESPacket, std::string)> callback)
++                         std::function<void(ESPacket, std::string)> callback,
++                         int interval)
+     : SourceHandler(module, stream_id) {
+   impl_ =
+-      new (std::nothrow) RtspHandlerImpl(module, url_name, this, use_ffmpeg, reconnect, maximum_resolution, callback);
++      new (std::nothrow) RtspHandlerImpl(module, url_name, this, use_ffmpeg, reconnect, maximum_resolution, callback,
++                                         interval);
+ }
+ 
+ RtspHandler::~RtspHandler() {
+@@ -517,8 +520,14 @@ void RtspHandlerImpl::OnDecodeError(DecodeErrorCode error_code) {
+ }
+ 
+ void RtspHandlerImpl::OnDecodeFrame(DecodeFrame *frame) {
+-  if (frame_count_++ % param_.interval_ != 0) {
+-    return;  // discard frames
++  if (interval_ > 0) {
++    if (frame_count_++ % interval_ != 0) {
++      return;  // discard frames
++    }
++  } else {
++    if (frame_count_++ % param_.interval_ != 0) {
++      return;  // discard frames
++    }
+   }
+   if (!frame) {
+     LOGW(SOURCE) << "[RtspHandlerImpl] OnDecodeFrame, frame is nullptr.";
+diff --git a/modules/source/src/data_handler_rtsp.hpp b/modules/source/src/data_handler_rtsp.hpp
+index 0390246..f83b391 100644
+--- a/modules/source/src/data_handler_rtsp.hpp
++++ b/modules/source/src/data_handler_rtsp.hpp
+@@ -49,7 +49,7 @@ class RtspHandlerImpl : public IDecodeResult, public SourceRender {
+  public:
+   explicit RtspHandlerImpl(DataSource *module, const std::string &url_name, RtspHandler *handler, bool use_ffmpeg,
+                            int reconnect, const MaximumVideoResolution &maximum_resolution,
+-                           std::function<void(ESPacket, std::string)> callback)
++                           std::function<void(ESPacket, std::string)> callback, int interval)
+       : SourceRender(handler),
+         module_(module),
+         url_name_(url_name),
+@@ -57,7 +57,8 @@ class RtspHandlerImpl : public IDecodeResult, public SourceRender {
+         use_ffmpeg_(use_ffmpeg),
+         reconnect_(reconnect),
+         maximum_resolution_(maximum_resolution),
+-        save_es_packet_(callback) { }
++        save_es_packet_(callback),
++        interval_(interval) { }
+   ~RtspHandlerImpl() {}
+   bool Open();
+   void Close();
+@@ -86,6 +87,7 @@ class RtspHandlerImpl : public IDecodeResult, public SourceRender {
+   void DemuxLoop();
+   void DecodeLoop();
+   std::function<void(cnstream::ESPacket, std::string)> save_es_packet_ = nullptr;
++  int interval_ = 0;
+ 
+ #ifdef UNIT_TEST
+  public:  // NOLINT
+diff --git a/modules/source/src/util/rtsp_client.cpp b/modules/source/src/util/rtsp_client.cpp
+index de466b6..a1b5317 100644
+--- a/modules/source/src/util/rtsp_client.cpp
++++ b/modules/source/src/util/rtsp_client.cpp
+@@ -668,10 +668,12 @@ class RtspSessionImpl {
+       TaskRoutine_();
+ 
+       // FIXME, apply reconnect strategy
+-      if (reconnect < 0) {
+-        break;
++      if (param_.reconnect >= 0) {
++        if (reconnect <= 0) {
++          break;
++        }
++        --reconnect;
+       }
+-      --reconnect;
+       std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+     }
+ 

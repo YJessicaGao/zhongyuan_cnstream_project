@@ -1,0 +1,5 @@
+[submodule "CNStream"]
+	path = CNStream
+	url = git@github.com:Cambricon/CNStream.git
+	branch = v6.3.0
+
