@@ -2,6 +2,7 @@
 
 ## 编译方式
 ```bash
+git submodule update --init --remote
 cp rtsp_handler.patch CNStream
 cd CNStream
 git apply rtsp_handler.patch
